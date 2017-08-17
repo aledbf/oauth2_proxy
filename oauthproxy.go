@@ -54,6 +54,7 @@ type OAuthProxy struct {
 	AuthOnlyPath      string
 
 	redirectURL         *url.URL // the url to receive requests at
+	redirectDomains     []string
 	provider            providers.Provider
 	ProxyPrefix         string
 	SignInMessage       string
@@ -198,6 +199,7 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 		provider:           opts.provider,
 		serveMux:           serveMux,
 		redirectURL:        redirectURL,
+		redirectDomains:    opts.RedirectDomains,
 		skipAuthRegex:      opts.SkipAuthRegex,
 		skipAuthPreflight:  opts.SkipAuthPreflight,
 		compiledRegex:      opts.CompiledRegex,
@@ -279,10 +281,10 @@ func (p *OAuthProxy) makeCookie(req *http.Request, name string, value string, ex
 	}
 
 	return &http.Cookie{
-		Name:     name,
-		Value:    value,
-		Path:     "/",
-		Domain:   domain,
+		Name:  name,
+		Value: value,
+		Path:  "/",
+		//Domain:   domain,
 		HttpOnly: p.CookieHttpOnly,
 		Secure:   p.CookieSecure,
 		Expires:  now.Add(expiration),
@@ -418,12 +420,30 @@ func (p *OAuthProxy) GetRedirect(req *http.Request) (redirect string, err error)
 		return
 	}
 
-	redirect = req.Form.Get("rd")
+	redirect = parseRedirect(req.Form.Get("rd"), p.redirectDomains)
+	return
+}
+
+func parseRedirect(redirect string, rds []string) string {
+	if len(rds) > 0 {
+		for _, rd := range rds {
+			parsed, err := url.Parse(redirect)
+			if err != nil {
+				log.Printf("error parsing redirect-url=%q %s", redirect, err)
+				continue
+			}
+
+			if strings.HasSuffix(parsed.Hostname(), rd) {
+				return redirect
+			}
+		}
+	}
+
 	if redirect == "" || !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") {
 		redirect = "/"
 	}
 
-	return
+	return redirect
 }
 
 func (p *OAuthProxy) IsWhitelistedRequest(req *http.Request) (ok bool) {
@@ -551,9 +571,8 @@ func (p *OAuthProxy) OAuthCallback(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") {
-		redirect = "/"
-	}
+	redirect = parseRedirect(redirect, p.redirectDomains)
+	log.Printf("redirect url %s (allowing redirects from %v", redirect, p.redirectDomains)
 
 	// set cookie, or deny
 	if p.Validator(session.Email) && p.provider.ValidateGroup(session.Email) {
